@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>IOT Dashboard</title>
+	<meta charset="UTF-8">
+	<link rel="stylesheet" type="text/css" href="bower_components/bootstrap/dist/css/bootstrap.min.css">
+	<link rel="stylesheet" type="text/css" href="bower_components/snackbarjs/dist/snackbar.min.css">
+	<link rel="stylesheet" type="text/css" href="bower_components/titatoggle/dist/titatoggle-dist-min.css">
+	<link rel="stylesheet" type="text/css" href="bower_components/bootstrap-material-design/dist/css/roboto.min.css">
+	<link rel="stylesheet" type="text/css" href="bower_components/bootstrap-material-design/dist/css/ripples.min.css">
+	<link rel="stylesheet" type="text/css" href="bower_components/bootstrap-material-design/dist/css/material-fullpalette.min.css">
+	<link rel="stylesheet" type="text/css" href="bower_components/nouislider/distribute/nouislider.min.css">
+</head>
+<body>
+	<div class="container" style="padding-top: 30px;">
+		<div class="text-center">
+			<h1>Publish Service</h1>
+
+
+<div style="margin: 15px 0; font-size: 18px;">
+    <div>
+        <strong>Broker:</strong>
+        <span id="broker-name">-</span>
+    </div>
+
+    <div>
+        <strong>Topic:</strong>
+        <span id="topic-name">-</span>
+    </div>
+</div>
+			<div style="margin: 15px 0;">
+				<span id="connection-status" class="label label-danger" style="font-size: 16px;">Disconnected</span>
+			</div>
+			<button class="btn btn-material-green-500" id="connect-button">Connect</button>
+			<button class="btn btn-material-red-500" id="disconnect-button" disabled>Disconnect</button>
+			<hr>
+			<div style="padding: 0 10% 0 10%;">
+				<div id="slider-handles"></div>
+			</div>
+			<h3>Value: <span id="value">0</span></h3>
+			<button class="btn btn-material-cyan-500 publish-button" id="publish-button" data-value="0">Publish
+				<div class="ripple-wrapper"></div>
+			</button>
+
+			<div class="row">
+				
+				<div class="col-md-12">
+						<h2>Red</h2>
+						<button class="btn btn-material-green-A400 publish-button" data-value="Red on">ON<div class="ripple-wrapper"></div>
+						</button>
+						<button class="btn btn-material-deep-orange-A400 publish-button" data-value="Red off">OFF<div class="ripple-wrapper"></div>
+						</button>
+				</div>
+				<div class="col-md-12">
+						<h2>Green</h2>
+						<button class="btn btn-material-green-A400 publish-button" data-value="Green on">ON<div class="ripple-wrapper"></div>
+						</button>
+						<button class="btn btn-material-deep-orange-A400 publish-button" data-value="Green off">OFF<div class="ripple-wrapper"></div>
+						</button>
+				</div>
+				<div class="col-md-12">
+						<h2>Blue</h2>
+						<button class="btn btn-material-green-A400 publish-button" data-value="Blue on">ON<div class="ripple-wrapper"></div>
+						</button>
+						<button class="btn btn-material-deep-orange-A400 publish-button" data-value="Blue off">OFF<div class="ripple-wrapper"></div>
+						</button>
+				</div>
+				
+			</div>
+		</div>
+	</div>
+	<script type="text/javascript" src="bower_components/jquery/dist/jquery.min.js"></script>
+	<script src="mqttws31.js" type="text/javascript"></script>
+	<script type="text/javascript" src="bower_components/bootstrap/dist/js/bootstrap.min.js"></script>
+	<script type="text/javascript" src="bower_components/nouislider/distribute/nouislider.min.js"></script>
+	<script type="text/javascript" src="bower_components/snackbarjs/dist/snackbar.min.js"></script>
+	<script type="text/javascript" src="bower_components/bootstrap-material-design/dist/js/material.min.js"></script>
+	<script type="text/javascript" src="bower_components/bootstrap-material-design/dist/js/ripples.min.js"></script>
+	<script type="text/javascript">
+			
+            $(function() {
+                $.material.init();
+
+                // URL broker
+				var MQTTbroker = 'mqtt-dashboard.com';
+				var MQTTport = 8884;
+				// Publish to topic
+				var MQTTpublishTopic = '67070102/rgb';
+
+				$('#broker-name').text(MQTTbroker + ':' + MQTTport);
+				$('#topic-name').text(MQTTpublishTopic);
+
+				//mqtt broker 
+				var client = new Paho.MQTT.Client(MQTTbroker, MQTTport,
+							"myclientid_012" + parseInt(Math.random() * 100, 10));
+				
+
+				var isConnected = false;
+				var statusShow = document.getElementById('connection-status');
+				var connectButton = document.getElementById('connect-button');
+				var disconnectButton = document.getElementById('disconnect-button');
+
+				function updateConnectionStatus(connected, message) {
+					isConnected = connected;
+					$(statusShow).text(message || (connected ? 'Connected' : 'Disconnected'));
+					$(statusShow)
+						.toggleClass('label-success', connected)
+						.toggleClass('label-danger', !connected);
+					$(connectButton).prop('disabled', connected);
+					$(disconnectButton).prop('disabled', !connected);
+					$('.publish-button').prop('disabled', !connected);
+				}
+
+				client.onConnectionLost = function (responseObject) {
+					updateConnectionStatus(false, 'Disconnected');
+					console.log("Connection lost: " + responseObject.errorMessage);
+				};
+
+				function connectMQTT() {
+					updateConnectionStatus(false, 'Connecting...');
+					var options = {
+						timeout: 3,
+						onSuccess: function () {
+							updateConnectionStatus(true, 'Connected');
+							console.log("mqtt connected");
+						},
+						onFailure: function (message) {
+							updateConnectionStatus(false, 'Connection Failed');
+							console.log("Connection failed, ERROR: " + message.errorMessage);
+						}
+					};
+					client.connect(options);
+				}
+
+				$(connectButton).click(function () {
+					if (!isConnected) {
+						connectMQTT();
+					}
+				});
+
+				$(disconnectButton).click(function () {
+					if (isConnected) {
+						client.disconnect();
+						updateConnectionStatus(false, 'Disconnected');
+					}
+				});
+
+                var rangeSlider = document.getElementById('slider-handles');
+                var valueShow = document.getElementById('value');
+                var snackbarMessage = 'Published !!!!';
+
+				noUiSlider.create(rangeSlider, {
+					start: 0,
+					connect: "lower",
+					range: {
+						'min': 0,
+						'max': 100
+					}
+				});
+
+				rangeSlider.noUiSlider.on('update', function(values, handle){
+					$(valueShow).text(parseInt(values[handle]));
+					$('#publish-button').data('value', parseInt(values[handle]));
+				});
+
+				$('.publish-button').click(function(e){
+					if (!isConnected) {
+						$.snackbar({content: 'กรุณา Connect ก่อน Publish'});
+						return;
+					}
+
+					$.snackbar({content: snackbarMessage});
+					var value = $(this).data('value') + '';
+					var message = new Paho.MQTT.Message(value);
+
+					message.destinationName = MQTTpublishTopic;
+					client.send(message);
+				});
+            });
+        
+	</script>
+</body>
+</html>
