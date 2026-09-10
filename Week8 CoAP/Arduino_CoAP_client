@@ -1,0 +1,74 @@
+//ใช้กับตัวต้านทานปรับค่าได้
+
+#include <WiFiS3.h>
+#include <WiFiUdp.h>
+#include <coap-simple.h>
+
+const char WIFI_SSID[] = "trojan.exe";
+const char WIFI_PASSWORD[] = "baimon221148";
+
+IPAddress serverIP(10, 117, 92, 44);
+const uint16_t COAP_PORT = 5683;
+
+const int POT_PIN = A0;
+
+WiFiUDP udp;
+Coap coap(udp);
+
+unsigned long lastPoll = 0;
+const unsigned long POLL_MS = 100; // เช็กค่าทุกๆ 100ms (เร็วขึ้น 20 เท่า)
+
+int lastRawValue = -1;
+const int THRESHOLD = 5; // อ่านค่าต่างจากเดิมเกิน 5 ถึงจะส่ง (กันสัญญาณอนาล็อกแกว่ง)
+
+void onClientResponse(CoapPacket &packet, IPAddress ip, int port) {
+  // รับ ACK จาก Server
+}
+
+void connectWiFi() {
+  int status = WL_IDLE_STATUS;
+  while (status != WL_CONNECTED) {
+    Serial.print("Connecting to SSID: ");
+    Serial.println(WIFI_SSID);
+    status = WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    delay(10000);
+  }
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(POT_PIN, INPUT);
+  
+  connectWiFi();
+
+  udp.begin(0);
+  coap.response(onClientResponse);
+  coap.start();
+
+  Serial.println("CoAP Potentiometer Fast Client Ready.");
+}
+
+void loop() {
+  coap.loop();
+
+  if (millis() - lastPoll >= POLL_MS) {
+    lastPoll = millis();
+
+    int currentRawValue = analogRead(POT_PIN);
+
+    // ส่งข้อมูลเฉพาะตอนที่หมุนปรับค่าจริงๆ เท่านั้น
+    if (abs(currentRawValue - lastRawValue) > THRESHOLD) {
+      lastRawValue = currentRawValue;
+
+      float pwmDuty = map(currentRawValue, 0, 1023, 0, 100);
+      String payloadStr = String(pwmDuty, 1);
+
+      Serial.print("Value Changed -> PUT /pwm Payload: ");
+      Serial.println(payloadStr);
+
+      coap.put(serverIP, COAP_PORT, "pwm", payloadStr.c_str());
+    }
+  }
+}
