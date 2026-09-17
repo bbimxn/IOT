@@ -1,0 +1,106 @@
+#include <WiFiS3.h>
+#include <WiFiUdp.h>
+#include <coap-simple.h>
+
+const char WIFI_SSID[] = "trojan.exe";
+const char WIFI_PASSWORD[] = "baimon221148";
+
+const uint16_t COAP_PORT = 5683;
+const int POT_PIN = A0;
+
+WiFiUDP udp;
+Coap coap(udp);
+
+IPAddress clientIP;
+int clientPort = 0;
+uint8_t clientToken[8];
+uint8_t clientTokenLen = 0;
+uint32_t observeSeq = 0;
+uint16_t nextMsgId = 1000;
+int lastPercent = -1;
+
+void connectWiFi() {
+  int status = WL_IDLE_STATUS;
+  while (status != WL_CONNECTED) {
+    status = WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    delay(3000);
+  }
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+// ฟังก์ชันพิเศษ: สร้างแพ็กเกจส่ง Observe Option ไปให้ Python (aiocoap)
+void sendObserve(IPAddress ip, int port, uint8_t *token, uint8_t tokenlen, uint16_t msgid, uint32_t obs_seq, String payload, uint8_t msgType) {
+  udp.beginPacket(ip, port);
+  
+  uint8_t header[4];
+  header[0] = msgType | (tokenlen & 0x0F); 
+  header[1] = 0x45; // Code: 2.05 Content
+  header[2] = msgid >> 8;
+  header[3] = msgid & 0xFF;
+  udp.write(header, 4);
+  
+  if (tokenlen > 0) udp.write(token, tokenlen);
+  
+  // ใส่ CoAP Option: Observe (Delta=6)
+  if (obs_seq < 256) {
+    udp.write(0x61); 
+    udp.write((uint8_t)obs_seq);
+  } else {
+    udp.write(0x62); 
+    udp.write((uint8_t)(obs_seq >> 8));
+    udp.write((uint8_t)(obs_seq & 0xFF));
+  }
+  
+  udp.write(0xFF); // Payload Marker
+  udp.print(payload);
+  udp.endPacket();
+}
+
+void handleTemperature(CoapPacket &packet, IPAddress ip, int port) {
+  // บันทึก Token ของ Client เพื่อให้ตอบกลับได้ตรงช่อง
+  clientIP = ip;
+  clientPort = port;
+  clientTokenLen = packet.tokenlen;
+  for(int i = 0; i < clientTokenLen; i++) {
+    clientToken[i] = packet.token[i];
+  }
+  observeSeq = 1;
+
+  int adcVal = analogRead(POT_PIN);
+  int percent = map(adcVal, 0, 1023, 0, 100);
+  lastPercent = percent;
+
+  // ส่ง Response แรกเป็น ACK (0x60)
+  sendObserve(clientIP, clientPort, clientToken, clientTokenLen, packet.messageid, observeSeq++, String(percent), 0x60);
+  Serial.println("Client Subscribed to Observe!");
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(POT_PIN, INPUT);
+  connectWiFi();
+  udp.begin(COAP_PORT);
+  
+  coap.server(handleTemperature, "temperature"); 
+  coap.start();
+}
+
+void loop() {
+  coap.loop();
+
+  // ดักจับการหมุนตัวต้านทาน และส่ง Notification (Observe)
+  if (clientPort != 0) {
+    int adcVal = analogRead(POT_PIN);
+    int percent = map(adcVal, 0, 1023, 0, 100);
+
+    if (abs(percent - lastPercent) >= 2) {
+      lastPercent = percent;
+      // ส่งอัปเดตต่อเนื่องเป็น NON (0x50)
+      sendObserve(clientIP, clientPort, clientToken, clientTokenLen, nextMsgId++, observeSeq++, String(percent), 0x50);
+      Serial.print("Notify: ");
+      Serial.println(percent);
+      delay(100); 
+    }
+  }
+}
