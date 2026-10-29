@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raspberry Pi IoT Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- MQTT over WebSocket: ใช้รับข้อมูลเซนเซอร์และสถานะ LED -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #b5ead7 0%, #c7ceea 50%, #ffdac1 100%);
+            margin: 0;
+            padding: 20px;
+        }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h2 { text-align: center; color: #333; }
+        .dashboard-cards { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+        .card { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); flex: 1; text-align: center; min-width: 150px; }
+        .card h3 { margin: 0; color: #666; font-size: 16px; }
+        .card .value { font-size: 32px; font-weight: bold; color: #2c3e50; margin-top: 10px; }
+        .control-panel { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: center; margin-bottom: 20px; }
+        .toggle-btn { padding: 10px 30px; font-size: 18px; cursor: pointer; border: none; border-radius: 25px; color: white; transition: 0.3s; }
+        .toggle-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-on { background-color: #27ae60; }
+        .btn-off { background-color: #e74c3c; }
+        .chart-container { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        #status-text { text-align: center; color: #666; margin-bottom: 20px; font-size: 14px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>Raspberry Pi Live Dashboard ras67070102</h2>
+    <div id="status-text">Connecting to MQTT...</div>
+
+    <div class="dashboard-cards">
+        <div class="card"><h3>Temperature</h3><div class="value" id="temp-val">-- °C</div></div>
+        <div class="card"><h3>Humidity</h3><div class="value" id="hum-val">-- %</div></div>
+        <div class="card"><h3>Distance</h3><div class="value" id="dist-val">-- cm</div></div>
+    </div>
+
+    <div class="control-panel">
+        <h3>LED Control (REST API)</h3>
+        <button id="led-btn" class="toggle-btn btn-off" onclick="toggleLED()">LED OFF</button>
+        <p id="led-status-text">LED status: waiting for device...</p>
+    </div>
+
+    <div class="chart-container"><canvas id="liveChart"></canvas></div>
+</div>
+
+<script>
+    // =========================================================
+    // 1) REST API configuration
+    // เปลี่ยน URL นี้ให้เป็น URL ของ Backend REST API จริง
+    // ตัวอย่างเฉพาะตอนทดสอบ Backend บนเครื่องเดียวกับ Browser: http://localhost:5000
+    // ห้ามใส่ URL ของ MCP tunnel :8000 แทน REST API โดยตรง
+    // =========================================================
+    const API_BASE_URL = "http://localhost:5000";
+    const API_LED_ENDPOINT = `${API_BASE_URL}/api/led`;
+
+    // =========================================================
+    // 2) MQTT configuration สำหรับรับข้อมูลเซนเซอร์/สถานะ LED
+    // Broker, port และ WebSocket path ต้องตรงกับค่าที่ Broker เปิดให้บริการจริง
+    // =========================================================
+    const mqttBroker = "mqtt-dashboard.com"; // ให้ตรงกับ MQTT_BROKER เริ่มต้นใน server.py
+    const mqttPort = 8884; // Secure WebSocket สำหรับหน้าเว็บที่เปิดผ่าน HTTPS
+    const mqttPath = "/mqtt";
+    const clientID = "web_client_" + Math.random().toString(16).slice(2, 10);
+
+    const TOPIC_TEMP = "ras67070102/temperature";
+    const TOPIC_HUM = "ras67070102/humidity";
+    const TOPIC_DIST = "ras67070102/distance";
+    const TOPIC_LED = "ras67070102/led";
+
+    let isLedOn = false;
+    let ledRequestPending = false;
+    const client = new Paho.MQTT.Client(mqttBroker, mqttPort, mqttPath, clientID);
+    const statusText = document.getElementById("status-text");
+    const ledButton = document.getElementById("led-btn");
+    const ledStatusText = document.getElementById("led-status-text");
+
+    client.onConnectionLost = (responseObject) => {
+        const detail = responseObject && responseObject.errorMessage ? responseObject.errorMessage : "unknown error";
+        statusText.innerText = "MQTT connection lost: " + detail;
+        statusText.style.color = "red";
+    };
+
+    client.onMessageArrived = (message) => {
+        const topic = message.destinationName;
+        const payload = message.payloadString.trim();
+        const numberValue = Number.parseFloat(payload);
+
+        if (topic === TOPIC_TEMP) {
+            if (Number.isFinite(numberValue)) {
+                document.getElementById("temp-val").innerText = numberValue.toFixed(2) + " °C";
+                updateChart(numberValue);
+            }
+        } else if (topic === TOPIC_HUM) {
+            if (Number.isFinite(numberValue)) document.getElementById("hum-val").innerText = numberValue.toFixed(2) + " %";
+        } else if (topic === TOPIC_DIST) {
+            if (Number.isFinite(numberValue)) document.getElementById("dist-val").innerText = numberValue.toFixed(1) + " cm";
+        } else if (topic === TOPIC_LED) {
+            // Raspberry Pi publishes the actual LED state as the text "on" or "off".
+            const normalized = payload.toLowerCase();
+            if (normalized === "on" || normalized === "off") {
+                updateLEDButton(normalized === "on");
+                ledStatusText.innerText = "LED status: " + normalized.toUpperCase();
+            }
+        }
+    };
+
+    function connectMQTT() {
+        client.connect({
+            useSSL: true,
+            onSuccess: () => {
+                statusText.innerText = "MQTT connected — sensor readings are live";
+                statusText.style.color = "green";
+                client.subscribe(TOPIC_TEMP);
+                client.subscribe(TOPIC_HUM);
+                client.subscribe(TOPIC_DIST);
+                client.subscribe(TOPIC_LED);
+            },
+            onFailure: (err) => {
+                const detail = err && err.errorMessage ? err.errorMessage : "Could not connect";
+                statusText.innerText = "MQTT connection failed: " + detail;
+                statusText.style.color = "red";
+            }
+        });
+    }
+
+    function updateLEDButton(status) {
+        isLedOn = Boolean(status);
+        ledButton.className = "toggle-btn " + (isLedOn ? "btn-on" : "btn-off");
+        ledButton.innerText = isLedOn ? "LED ON" : "LED OFF";
+    }
+
+    // ใช้ REST API แทนการ client.send() ไปยัง MQTT command topic
+    // Backend ที่ /api/led ต้อง validate คำสั่ง แล้ว publish MQTT ไปที่ ras67070102/command
+    // พร้อม payload เช่น {"action":"led","state":"on"}
+    async function toggleLED() {
+        if (ledRequestPending) return;
+
+        const targetState = isLedOn ? "off" : "on";
+        ledRequestPending = true;
+        ledButton.disabled = true;
+        ledButton.innerText = "Sending...";
+        ledStatusText.innerText = "Sending REST API request to turn LED " + targetState.toUpperCase() + "...";
+
+        try {
+            const response = await fetch(API_LED_ENDPOINT, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                // REST API รับ body นี้ แล้ว Backend ส่งต่อเป็น MQTT command ให้ Raspberry Pi
+                body: JSON.stringify({ action: "led", state: targetState })
+            });
+
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false) {
+                throw new Error(result.message || `HTTP ${response.status}`);
+            }
+
+            // ไม่เปลี่ยนสถานะจริงของปุ่มทันที รอ MQTT TOPIC_LED ยืนยันจาก Raspberry Pi
+            ledStatusText.innerText = "Command accepted by API; waiting for Raspberry Pi confirmation...";
+        } catch (error) {
+            console.error("REST API LED request failed:", error);
+            ledStatusText.innerText = "Command failed: " + (error.message || "REST API request error");
+            alert("ส่งคำสั่ง LED ไม่สำเร็จ ตรวจสอบ REST API URL, Backend และ CORS\n" + (error.message || "Unknown error"));
+            // คืนข้อความปุ่มตามสถานะล่าสุดที่ยืนยันจากอุปกรณ์
+            updateLEDButton(isLedOn);
+        } finally {
+            ledRequestPending = false;
+            ledButton.disabled = false;
+            // คง label ตามสถานะอุปกรณ์ล่าสุด
+            updateLEDButton(isLedOn);
+        }
+    }
+
+    const ctx = document.getElementById("liveChart").getContext("2d");
+    const liveChart = new Chart(ctx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [{
+                label: "Temperature (°C)",
+                data: [],
+                borderColor: "#e74c3c",
+                backgroundColor: "rgba(231, 76, 60, 0.2)",
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: { display: true },
+                y: { suggestedMin: 15, suggestedMax: 40 }
+            }
+        }
+    });
+
+    function updateChart(tempValue) {
+        const timeNow = new Date().toLocaleTimeString("th-TH", {
+            hour: "2-digit", minute: "2-digit", second: "2-digit"
+        });
+        if (liveChart.data.labels.length >= 15) {
+            liveChart.data.labels.shift();
+            liveChart.data.datasets[0].data.shift();
+        }
+        liveChart.data.labels.push(timeNow);
+        liveChart.data.datasets[0].data.push(tempValue);
+        liveChart.update();
+    }
+
+    window.addEventListener("load", connectMQTT);
+</script>
+</body>
+</html>
