@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raspberry Pi IoT Dashboard</title>
+    <!-- Chart.js สำหรับวาดกราฟ -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Paho MQTT สำหรับเชื่อมต่อ MQTT ผ่าน WebSocket -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 20px;background: linear-gradient(135deg in oklch, oklch(81.89% 0.0799 165.23) 0.0%, oklch(82.14% 0.0799 169.56) 3.2%, oklch(82.48% 0.0799 175.25) 6.5%, oklch(82.88% 0.0799 182.03) 9.7%, oklch(83.33% 0.0799 189.59) 12.9%, oklch(83.79% 0.0799 197.67) 16.1%, oklch(84.27% 0.0799 205.98) 19.4%, oklch(84.72% 0.0799 214.22) 22.6%, oklch(85.14% 0.0799 222.15) 25.8%, oklch(85.55% 0.0799 230.33) 29.0%, oklch(85.97% 0.0782 238.90) 32.3%, oklch(86.38% 0.0707 247.72) 35.5%, oklch(86.79% 0.0655 256.59) 38.7%, oklch(87.20% 0.0623 265.37) 41.9%, oklch(87.60% 0.0605 273.86) 45.2%, oklch(88.00% 0.0600 281.90) 48.4%, oklch(88.38% 0.0606 289.35) 51.6%, oklch(88.73% 0.0621 296.24) 54.8%, oklch(89.07% 0.0645 302.72) 58.1%, oklch(89.39% 0.0680 308.92) 61.3%, oklch(89.73% 0.0730 314.99) 64.5%, oklch(90.07% 0.0801 321.05) 67.7%, oklch(90.44% 0.0810 327.23) 71.0%, oklch(90.84% 0.0714 333.69) 74.2%, oklch(91.29% 0.0598 340.71) 77.4%, oklch(91.83% 0.0503 348.50) 80.6%, oklch(92.41% 0.0428 356.71) 83.9%, oklch(93.01% 0.0370 4.94) 87.1%, oklch(93.59% 0.0327 12.80) 90.3%, oklch(94.12% 0.0295 19.91) 93.5%, oklch(94.56% 0.0272 25.89) 96.8%, oklch(94.88% 0.0257 30.33) 100.0%); }
+        .container { max-width: 1000px; margin: 0 auto; }
+        h2 { text-align: center; color: #333; }
+        
+        .dashboard-cards { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+        .card { 
+            background: #fff; padding: 20px; border-radius: 10px; 
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1); flex: 1; text-align: center; min-width: 150px;
+        }
+        .card h3 { margin: 0; color: #666; font-size: 16px; }
+        .card .value { font-size: 32px; font-weight: bold; color: #2c3e50; margin-top: 10px; }
+        
+        .control-panel { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: center; margin-bottom: 20px; }
+        .toggle-btn {
+            padding: 10px 30px; font-size: 18px; cursor: pointer; border: none; 
+            border-radius: 25px; color: white; transition: 0.3s;
+        }
+        .btn-on { background-color: #27ae60; }
+        .btn-off { background-color: #e74c3c; }
+        
+        .chart-container { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        #status-text { text-align: center; color: #888; margin-bottom: 20px; font-size: 14px; }
+        
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Raspberry Pi Live Dashboard ras67070102</h2>
+    <div id="status-text">Connecting to MQTT ras67070102</div>
+    
+    <!-- ส่วนแสดงค่าเซนเซอร์ -->
+    <div class="dashboard-cards">
+        <div class="card">
+            <h3>Temperature</h3>
+            <div class="value" id="temp-val">-- °C</div>
+        </div>
+        <div class="card">
+            <h3>Humidity</h3>
+            <div class="value" id="hum-val">-- %</div>
+        </div>
+        <div class="card">
+            <h3>Distance</h3>
+            <div class="value" id="dist-val">-- cm</div>
+        </div>
+    </div>
+
+    <!-- ส่วนควบคุม LED -->
+    <div class="control-panel">
+        <h3>LED Control</h3>
+        <button id="led-btn" class="toggle-btn btn-off" onclick="toggleLED()">LED OFF</button>
+    </div>
+
+    <!-- ส่วนแสดงกราฟอุณหภูมิ -->
+    <div class="chart-container">
+        <canvas id="liveChart"></canvas>
+    </div>
+</div>
+
+<script>
+    // ==========================================
+    // ตั้งค่า MQTT (ตามโค้ด Python ของคุณ)
+    // ==========================================
+    // ในโค้ดคุณใช้ broker "mqtt-dashboard.com" ซึ่งก็คือ HiveMQ Public Broker
+    const mqttBroker = "broker.hivemq.com"; 
+    const mqttPort = 8000; // พอร์ตสำหรับ WebSocket บนเว็บ (ห้ามใช้ 1883)
+    const clientID = "web_client_" + Math.random().toString(16).substr(2, 8);
+    
+    // ตั้งค่า Topics ตามฝั่งเซิร์ฟเวอร์
+    const TOPIC_COMMAND = "ras67070102/command";
+    const TOPIC_TEMP    = "ras67070102/temperature";
+    const TOPIC_HUM     = "ras67070102/humidity";
+    const TOPIC_DIST    = "ras67070102/distance";
+    const TOPIC_LED     = "ras67070102/led";
+
+    let isLedOn = false;
+    const client = new Paho.MQTT.Client(mqttBroker, mqttPort, clientID);
+
+    // ==========================================
+    // จัดการเหตุการณ์ MQTT
+    // ==========================================
+    client.onConnectionLost = (responseObject) => {
+        document.getElementById("status-text").innerText = "MQTT Connection Lost: " + responseObject.errorMessage;
+        document.getElementById("status-text").style.color = "red";
+    };
+
+    client.onMessageArrived = (message) => {
+        const topic = message.destinationName;
+        const payload = message.payloadString;
+        
+        if (topic === TOPIC_TEMP) {
+            document.getElementById("temp-val").innerText = parseFloat(payload).toFixed(2) + " °C";
+            updateChart(parseFloat(payload));
+        } 
+        else if (topic === TOPIC_HUM) {
+            document.getElementById("hum-val").innerText = parseFloat(payload).toFixed(2) + " %";
+        } 
+        else if (topic === TOPIC_DIST) {
+            document.getElementById("dist-val").innerText = parseFloat(payload).toFixed(1) + " cm";
+        } 
+        else if (topic === TOPIC_LED) {
+            // โค้ด Python ส่งสถานะ "on" หรือ "off"
+            updateLEDButton(payload.toLowerCase() === "on");
+        }
+    };
+
+    function connectMQTT() {
+        client.connect({
+            onSuccess: () => {
+                document.getElementById("status-text").innerText = "Connected to " + mqttBroker;
+                document.getElementById("status-text").style.color = "green";
+                
+                // Subscribe ไปยัง Topics เซนเซอร์และสถานะ LED
+                client.subscribe(TOPIC_TEMP);
+                client.subscribe(TOPIC_HUM);
+                client.subscribe(TOPIC_DIST);
+                client.subscribe(TOPIC_LED);
+            },
+            onFailure: (err) => {
+                document.getElementById("status-text").innerText = "Connection Failed: " + err.errorMessage;
+                document.getElementById("status-text").style.color = "red";
+            }
+        });
+    }
+
+    // ==========================================
+    // ควบคุม LED (Publish Command)
+    // ==========================================
+    function updateLEDButton(status) {
+        isLedOn = status;
+        const btn = document.getElementById("led-btn");
+        if (isLedOn) {
+            btn.className = "toggle-btn btn-on";
+            btn.innerText = "LED ON";
+        } else {
+            btn.className = "toggle-btn btn-off";
+            btn.innerText = "LED OFF";
+        }
+    }
+
+    function toggleLED() {
+        if (!client.isConnected()) {
+            alert("MQTT not connected yet!");
+            return;
+        }
+        
+        const targetState = isLedOn ? "off" : "on";
+        
+        // ส่งคำสั่งรูปแบบ JSON ตามที่ Python function `handle_mqtt_command` รองรับ
+        const commandPayload = JSON.stringify({
+            action: "led",
+            state: targetState
+        });
+
+        const message = new Paho.MQTT.Message(commandPayload);
+        message.destinationName = TOPIC_COMMAND;
+        message.qos = 1;
+        client.send(message);
+        
+        // (ปุ่มจะเปลี่ยนสีเมื่อได้รับ Message ตอบกลับจาก TOPIC_LED เพื่อความแม่นยำของสถานะจริง)
+    }
+
+    // ==========================================
+    // กราฟอุณหภูมิ (Chart.js)
+    // ==========================================
+    const ctx = document.getElementById('liveChart').getContext('2d');
+    const liveChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [], 
+            datasets: [{
+                label: 'Temperature (°C)',
+                data: [], 
+                borderColor: '#e74c3c',
+                backgroundColor: 'rgba(231, 76, 60, 0.2)',
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: { 
+                x: { display: true }, 
+                y: { 
+                    suggestedMin: 15, // ปรับขั้นต่ำเป็น 15°C (สำหรับห้องแอร์เย็นๆ)
+                    suggestedMax: 40  // ปรับขั้นสูงเป็น 40°C (สำหรับนอกห้องแอร์/อากาศร้อน)
+                } 
+            }
+        }
+    });
+
+    function updateChart(tempValue) {
+        const timeNow = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second:'2-digit' });
+        if (liveChart.data.labels.length > 15) {
+            liveChart.data.labels.shift();
+            liveChart.data.datasets[0].data.shift();
+        }
+        liveChart.data.labels.push(timeNow);
+        liveChart.data.datasets[0].data.push(tempValue);
+        liveChart.update();
+    }
+
+    // เริ่มการทำงาน
+    window.onload = connectMQTT;
+</script>
+
+</body>
+</html>
