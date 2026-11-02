@@ -1,0 +1,8 @@
+ras67070102
+67070102
+
+./start_web_tunnel.sh
+./start_mcp_tunnel.sh
+
+cd assignment/
+source ./activate_env.sh
