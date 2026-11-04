@@ -1,0 +1,311 @@
+
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raspberry Pi IoT Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #ff8578;
+            background: linear-gradient(90deg, rgba(255, 133, 120, 1) 0%, rgba(255, 199, 143, 1) 16%, rgba(255, 243, 133, 1) 31%, rgba(173, 255, 153, 1) 49%, rgba(191, 255, 252, 1) 67%, rgba(179, 199, 255, 1) 83%, rgba(231, 179, 255, 1) 100%);
+            margin: 0;
+            padding: 20px;
+        }
+        .container { max-width: 1320px; margin: 0 auto; }
+        h2 { text-align: center; color: #333; }
+        .dashboard-cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .card { background: #fff; padding: 18px 14px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: center; min-width: 0; }
+        .card h3 { margin: 0; color: #666; font-size: 16px; }
+        .card .value { font-size: 30px; font-weight: bold; color: #2c3e50; margin-top: 10px; }
+        .obstacle-value.detected { color: #e74c3c; }
+        .obstacle-value.clear { color: #27ae60; }
+        .obstacle-sub { margin: 8px 0 0; color: #777; font-size: 12px; }
+        .control-panel { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: center; margin-bottom: 20px; }
+        .toggle-btn { padding: 10px 30px; font-size: 18px; cursor: pointer; border: none; border-radius: 25px; color: white; transition: 0.3s; }
+        .toggle-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-on { background-color: #27ae60; }
+        .btn-off { background-color: #e74c3c; }
+        .dashboard-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: stretch; }
+        .chart-container { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-bottom: 20px; min-width: 0; }
+        .chart-container canvas { max-width: 100%; }
+        .distance-dashboard { margin-top: 0; }
+        @media (max-width: 980px) {
+            .dashboard-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (max-width: 760px) {
+            .dashboard-panels { grid-template-columns: minmax(0, 1fr); }
+        }
+        @media (max-width: 560px) {
+            body { padding: 12px; }
+            .dashboard-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+            .card { padding: 14px 10px; }
+            .card .value { font-size: 25px; }
+        }
+        .distance-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .distance-current { font-size: 30px; font-weight: bold; color: #2c3e50; margin: 8px 0; }
+        .muted { color: #777; font-size: 13px; }
+        #status-text { text-align: center; color: #666; margin-bottom: 20px; font-size: 14px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>Raspberry Pi Live Dashboard ras67070102</h2>
+    <div id="status-text">Connecting to REST API...</div>
+
+    <div class="dashboard-cards">
+        <div class="card"><h3>Temperature</h3><div class="value" id="temp-val">-- °C</div></div>
+        <div class="card"><h3>Humidity</h3><div class="value" id="hum-val">-- %</div></div>
+        <div class="card"><h3>Distance</h3><div class="value" id="dist-val">-- cm</div></div>
+        <div class="card"><h3>LED Status</h3><div class="value" id="led-val">--</div><p class="obstacle-sub" id="led-output-sub">Output status unavailable</p></div>
+        <div class="card">
+            <h3>KY-032 Obstacle</h3>
+            <div class="value obstacle-value" id="obstacle-val">--</div>
+            <p class="obstacle-sub" id="obstacle-updated-at">Waiting for KY-032 data...</p>
+        </div>
+    </div>
+
+    <div class="control-panel">
+        <h3>LED Control (REST API / MCP)</h3>
+        <button id="led-btn" class="toggle-btn btn-off" onclick="toggleLED()">LED OFF</button>
+        <p id="led-status-text">LED status: waiting for device...</p>
+        <p id="led-status-detail">LED is controlled ON/OFF only.</p>
+    </div>
+
+    <div class="dashboard-panels">
+    <section class="chart-container temperature-dashboard">
+        <h3>Temperature History</h3>
+        <canvas id="liveChart"></canvas>
+    </section>
+
+    <!-- Distance dashboard is displayed beside Temperature on wide screens. -->
+    <section class="chart-container distance-dashboard">
+        <div class="distance-heading">
+            <div>
+                <h3>Distance Monitoring Dashboard</h3>
+                <div class="muted">HC-SR04 live measurement</div>
+            </div>
+            <div style="text-align: right;">
+                <div class="muted">Current distance</div>
+                <div class="distance-current" id="distance-live-val">-- cm</div>
+                <div class="muted" id="distance-updated-at">Waiting for sensor data...</div>
+            </div>
+        </div>
+        <canvas id="distanceChart"></canvas>
+    </section>
+    </div>
+</div>
+
+<script>
+    // The page and REST API are served from the same host and port.
+    // No browser-side MQTT connection is used.
+    const API_TELEMETRY_ENDPOINT = "/api/telemetry";
+    const API_LED_ENDPOINT = "/api/led";
+    const POLL_INTERVAL_MS = 250;
+
+    let isLedOn = false;
+    let ledRequestPending = false;
+    let telemetryRequestPending = false;
+    let lastChartTimestamp = null;
+    let lastDistanceTimestamp = null;
+
+    const statusText = document.getElementById("status-text");
+    const ledButton = document.getElementById("led-btn");
+    const ledStatusText = document.getElementById("led-status-text");
+    const ledOutputSub = document.getElementById("led-output-sub");
+
+    function updateLEDButton(status) {
+        isLedOn = status === "on" || status === true;
+        ledButton.className = "toggle-btn " + (isLedOn ? "btn-on" : "btn-off");
+        ledButton.innerText = isLedOn ? "LED ON" : "LED OFF";
+    }
+
+    function updateChart(tempValue, timestamp) {
+        if (timestamp && timestamp === lastChartTimestamp) return;
+        lastChartTimestamp = timestamp || new Date().toISOString();
+
+        const timeNow = new Date().toLocaleTimeString("th-TH", {
+            hour: "2-digit", minute: "2-digit", second: "2-digit"
+        });
+        if (liveChart.data.labels.length >= 30) {
+            liveChart.data.labels.shift();
+            liveChart.data.datasets[0].data.shift();
+        }
+        liveChart.data.labels.push(timeNow);
+        liveChart.data.datasets[0].data.push(tempValue);
+        liveChart.update("none");
+    }
+
+    function updateDistanceChart(distanceValue, timestamp) {
+        if (!distanceValue || (timestamp && timestamp === lastDistanceTimestamp)) return;
+        lastDistanceTimestamp = timestamp || new Date().toISOString();
+        const timeNow = new Date().toLocaleTimeString("th-TH", {
+            hour: "2-digit", minute: "2-digit", second: "2-digit"
+        });
+        if (distanceChart.data.labels.length >= 30) {
+            distanceChart.data.labels.shift();
+            distanceChart.data.datasets[0].data.shift();
+        }
+        distanceChart.data.labels.push(timeNow);
+        distanceChart.data.datasets[0].data.push(distanceValue);
+        distanceChart.update("none");
+    }
+
+    async function refreshTelemetry() {
+        if (telemetryRequestPending) return;
+        telemetryRequestPending = true;
+        try {
+            const response = await fetch(API_TELEMETRY_ENDPOINT, { cache: "no-store" });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+
+            if (data.temperature_c !== null && data.temperature_c !== undefined && Number.isFinite(Number(data.temperature_c))) {
+                const value = Number(data.temperature_c);
+                document.getElementById("temp-val").innerText = value.toFixed(2) + " °C";
+                updateChart(value, data.temperature_timestamp || data.timestamp);
+            }
+            if (data.humidity_pct !== null && data.humidity_pct !== undefined && Number.isFinite(Number(data.humidity_pct))) {
+                document.getElementById("hum-val").innerText = Number(data.humidity_pct).toFixed(2) + " %";
+            }
+            if (data.distance_cm !== null && data.distance_cm !== undefined && Number.isFinite(Number(data.distance_cm))) {
+                const distanceValue = Number(data.distance_cm);
+                document.getElementById("dist-val").innerText = distanceValue.toFixed(1) + " cm";
+                document.getElementById("distance-live-val").innerText = distanceValue.toFixed(1) + " cm";
+                updateDistanceChart(distanceValue, data.distance_timestamp || data.timestamp);
+                document.getElementById("distance-updated-at").innerText = data.distance_timestamp
+                    ? "Last measurement: " + new Date(data.distance_timestamp).toLocaleTimeString("th-TH")
+                    : "Measurement timestamp unavailable";
+            }
+
+            // KY-032 status comes from a one-byte LoRa payload: 1=detected, 0=clear.
+            const obstacleValue = document.getElementById("obstacle-val");
+            const obstacleUpdatedAt = document.getElementById("obstacle-updated-at");
+            if (data.obstacle_sensor_available === true && typeof data.obstacle_detected === "boolean") {
+                const obstacleStale = data.obstacle_status === "stale";
+                obstacleValue.innerText = data.obstacle_detected ? "DETECTED" : "CLEAR";
+                obstacleValue.className = "value obstacle-value " + (data.obstacle_detected ? "detected" : "clear");
+                const age = Number.isFinite(Number(data.obstacle_age_seconds))
+                    ? ` · ${Number(data.obstacle_age_seconds).toFixed(1)}s ago` : "";
+                obstacleUpdatedAt.innerText = (obstacleStale ? "STALE DATA" : "LoRa update") + age;
+            } else {
+                obstacleValue.innerText = "NO DATA";
+                obstacleValue.className = "value obstacle-value";
+                obstacleUpdatedAt.innerText = "Waiting for a 1-byte KY-032 LoRa uplink";
+            }
+
+            if (data.led === "on" || data.led === "off") {
+                updateLEDButton(data.led);
+                document.getElementById("led-val").innerText = data.led.toUpperCase();
+                ledOutputSub.innerText = `GPIO4 output: ${Number(data.led_output_percent ?? (data.led === "on" ? 100 : 0))}%`;
+                ledStatusText.innerText = "LED control: " + data.led.toUpperCase();
+            }
+
+            const localMqtt = data.local_mqtt_connected ? "MQTT connected" : "MQTT disconnected";
+            const loraMqtt = data.chirpstack_connected ? "LoRa connected" : "LoRa disconnected";
+            statusText.innerText = `REST API connected — ${localMqtt} — ${loraMqtt}`;
+            statusText.style.color = data.local_mqtt_connected ? "green" : "#c27c0e";
+        } catch (error) {
+            statusText.innerText = "REST API connection failed: " + (error.message || "Unknown error");
+            statusText.style.color = "red";
+        } finally {
+            telemetryRequestPending = false;
+        }
+    }
+
+    async function toggleLED() {
+        if (ledRequestPending) return;
+
+        const targetState = isLedOn ? "off" : "on";
+        ledRequestPending = true;
+        ledButton.disabled = true;
+        ledButton.innerText = "Sending...";
+        ledStatusText.innerText = "Sending REST API request to turn LED " + targetState.toUpperCase() + "...";
+
+        try {
+            const response = await fetch(API_LED_ENDPOINT, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "led", state: targetState })
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false) {
+                throw new Error(result.message || `HTTP ${response.status}`);
+            }
+            updateLEDButton(result.state || targetState);
+            ledStatusText.innerText = "LED confirmed: " + (result.state || targetState).toUpperCase();
+        } catch (error) {
+            const message = error.message || "REST API request error";
+            if (message.includes("HTTP 504")) {
+                // A timeout means the browser did not receive the acknowledgement in time;
+                // the physical command may still have been applied. Do not label it as a definite failure.
+                ledStatusText.innerText = "ยังไม่ได้รับ ACK จาก REST API — กำลังตรวจสถานะ LED จริง...";
+                await new Promise(resolve => setTimeout(resolve, 900));
+                await refreshTelemetry();
+            } else {
+                ledStatusText.innerText = "ส่งคำสั่งไม่สำเร็จ: " + message;
+                alert("ส่งคำสั่ง LED ไม่สำเร็จ\n" + message);
+            }
+        } finally {
+            ledRequestPending = false;
+            ledButton.disabled = false;
+            await refreshTelemetry();
+        }
+    }
+
+    const ctx = document.getElementById("liveChart").getContext("2d");
+    const liveChart = new Chart(ctx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [{
+                label: "Temperature (°C)",
+                data: [],
+                borderColor: "#e74c3c",
+                backgroundColor: "rgba(231, 76, 60, 0.2)",
+                tension: 0.4,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: { display: true },
+                y: { suggestedMin: 15, suggestedMax: 40 }
+            }
+        }
+    });
+
+    const distanceCtx = document.getElementById("distanceChart").getContext("2d");
+    const distanceChart = new Chart(distanceCtx, {
+        type: "line",
+        data: {
+            labels: [],
+            datasets: [{
+                label: "Distance (cm)",
+                data: [],
+                borderColor: "#8e44ad",
+                backgroundColor: "rgba(142, 68, 173, 0.16)",
+                tension: 0.25,
+                fill: true,
+                pointRadius: 3
+            }]
+        },
+        options: {
+            responsive: true,
+            animation: false,
+            scales: {
+                x: { display: true },
+                y: { suggestedMin: 0, suggestedMax: 200, title: { display: true, text: "cm" } }
+            }
+        }
+    });
+
+    window.addEventListener("load", () => {
+        refreshTelemetry();
+        setInterval(refreshTelemetry, POLL_INTERVAL_MS);
+    });
+</script>
+</body>
+</html>
